@@ -28,8 +28,10 @@ Thumbs.db
 venv/
 ENV/
 
-# Data (if not tracking)
-# data/
+# Data & results
+data/
+results/
+
 
 # Misc
 *.log

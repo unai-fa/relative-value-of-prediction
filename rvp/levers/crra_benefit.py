@@ -17,9 +17,9 @@ class CRRABenefitLever(ParameterizedLever):
     - Marginal mode (marginal=True): theta is the INCREMENT in benefit above baseline
       The baseline is automatically extracted from problem.utility.b
 
-    Cost model (when cost_per_unit is set):
-    - Setting mode: cost = theta * cost_per_unit (total cost)
-    - Marginal mode: cost = theta * cost_per_unit (incremental cost only)
+    Cost model:
+    - cost = theta * n_allocated (from problem.constraint.get_capacity())
+    - In marginal mode, theta is the increment, so cost is incremental
 
     Can represent:
     - Changes in transfer size (e.g., cash transfer amount)
@@ -37,7 +37,6 @@ class CRRABenefitLever(ParameterizedLever):
             name="Transfer size",
             new_benefit=20,  # theta = 20 increment -> final = problem.utility.b + 20
             marginal=True,
-            cost_per_unit=1.0,
         )
     """
 
@@ -46,7 +45,6 @@ class CRRABenefitLever(ParameterizedLever):
         name: str,
         new_benefit: float,
         marginal: bool = False,
-        cost_per_unit: float = 1.0,
     ):
         """Initialize CRRA benefit lever.
 
@@ -56,14 +54,12 @@ class CRRABenefitLever(ParameterizedLever):
                 this is the INCREMENT above the problem's current benefit.
             marginal: If True, theta is interpreted as increment above baseline
                 (baseline extracted from problem.utility.b)
-            cost_per_unit: Cost per unit of benefit (for budget calculations)
         """
         if marginal and new_benefit < 0:
             raise ValueError(f"In marginal mode, new_benefit (increment) must be >= 0, got {new_benefit}")
 
         super().__init__(name, theta=new_benefit)
         self.marginal = marginal
-        self.cost_per_unit = cost_per_unit
 
     @property
     def new_benefit(self) -> float:
@@ -92,26 +88,21 @@ class CRRABenefitLever(ParameterizedLever):
             name=self.name,
             new_benefit=theta,
             marginal=self.marginal,
-            cost_per_unit=self.cost_per_unit,
         )
 
     def compute_cost(self, problem: 'AllocationProblem') -> float:
-        """Compute benefit cost.
+        """Compute benefit cost = theta * n_allocated.
 
-        In setting mode: total cost = theta * cost_per_unit
-        In marginal mode: incremental cost = theta * cost_per_unit
-            (theta is the increment above baseline)
+        The cost of increasing benefit by theta is theta per beneficiary.
+        n_allocated is read from the problem's constraint.
         """
-        # In both modes, theta represents what we're "paying for"
-        # Setting mode: paying for the full benefit
-        # Marginal mode: paying for the increment only
-        return self.theta * self.cost_per_unit
+        n_allocated = problem.constraint.get_capacity()
+        return self.theta * n_allocated
 
     def for_budget(self, budget: float, problem: 'AllocationProblem') -> 'CRRABenefitLever':
         """Return lever with benefit adjusted to match budget.
 
-        In setting mode: theta = budget / cost_per_unit
-        In marginal mode: theta = budget / cost_per_unit (as increment)
+        theta = budget / n_allocated (benefit per person given total budget).
 
         Args:
             budget: Target budget for benefit
@@ -120,7 +111,8 @@ class CRRABenefitLever(ParameterizedLever):
         Returns:
             New lever with adjusted theta
         """
-        theta = budget / self.cost_per_unit
+        n_allocated = problem.constraint.get_capacity()
+        theta = budget / n_allocated if n_allocated > 0 else 0.0
         return self.with_theta(theta)
 
     def apply(self, problem: 'AllocationProblem') -> 'AllocationProblem':
@@ -161,7 +153,6 @@ class CRRABenefitLever(ParameterizedLever):
         if self.marginal:
             return (
                 f"CRRABenefitLever(name='{self.name}', "
-                f"theta={self.theta}, marginal=True, "
-                f"cost_per_unit={self.cost_per_unit})"
+                f"theta={self.theta}, marginal=True)"
             )
         return f"CRRABenefitLever(name='{self.name}', new_benefit={self.theta})"

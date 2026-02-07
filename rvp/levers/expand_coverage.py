@@ -47,6 +47,23 @@ class ExpandCoverageLever(ParameterizedLever):
             marginal_cost_per_person=self.marginal_cost_per_person,
         )
 
+    def with_marginal_cost(self, marginal_cost: float) -> 'ExpandCoverageLever':
+        """Return new lever with different marginal_cost_per_person.
+
+        Useful in lever linkage to update cost based on benefit level.
+
+        Args:
+            marginal_cost: New cost per additional person served
+
+        Returns:
+            New lever with updated marginal_cost_per_person
+        """
+        return ExpandCoverageLever(
+            name=self.name,
+            coverage_increase=self.theta,
+            marginal_cost_per_person=marginal_cost,
+        )
+
     def compute_cost(self, problem: 'AllocationProblem') -> float:
         n_additional = int(self.theta * problem.data.n)
         return n_additional * self.marginal_cost_per_person

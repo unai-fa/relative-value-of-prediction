@@ -19,12 +19,10 @@ from .welfare_heatmap import (
     plot_welfare_heatmap,
 )
 from .budget_optimization import (
-    optimize_two_lever_budget,
-    plot_two_lever_optimization,
-)
-from .residual_benefit_optimization import (
-    optimize_budget_with_residual_benefit,
-    plot_budget_allocation_stacked,
+    optimize_budget_allocation,
+    plot_budget_shares,
+    plot_budget_thetas,
+    LeverLinkage,
 )
 
 __all__ = [
@@ -38,8 +36,8 @@ __all__ = [
     "plot_welfare_curve",
     "compute_welfare_ratio",
     "plot_welfare_heatmap",
-    "optimize_two_lever_budget",
-    "plot_two_lever_optimization",
-    "optimize_budget_with_residual_benefit",
-    "plot_budget_allocation_stacked",
+    "optimize_budget_allocation",
+    "plot_budget_shares",
+    "plot_budget_thetas",
+    "LeverLinkage",
 ]

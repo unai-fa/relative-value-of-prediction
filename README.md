@@ -1,201 +1,127 @@
-# RVP - Relative Value of Prediction
+`rvp` is a Python toolkit for evaluating the value of prediction for guiding the allocation of scarce resources.
 
-A Python toolkit for comparing policy levers in resource allocation problems. Given predictions, how should policymakers allocate limited resources across different policy levers (e.g., data collection, capacity expansion, benefit increases) to maximize social welfare?
+When predictions guide who receives limited societal resources, for example, cash transfers, job training or medical screenings, policymakers face a practical question: how valuable is improving predictions compared to other investments, such as expanding program capacity or increasing benefit levels? `rvp` provides the tools to answer this empirically, using your own data.
 
-![](figures/relative-value-of-prediction.png)
+> Companion to our paper *Empirically Understanding the Value of Prediction in Allocation* (Under Review, ICML 2026).
 
-## Quick Start
+---
 
-**1. Load your data** — a DataFrame with predictions and ground truth outcomes:
+## Installation
 
-```python
-from rvp import AllocationData
-
-data = AllocationData(
-    df=your_dataframe,
-    predictions_col='predictions',
-    ground_truth_col='groundtruth'
-)
+```bash
+git clone https://github.com/rvp-toolkit/rvp.git
+cd rvp
+pip install -e .
 ```
 
-**2. Define the allocation problem** — specify utility function, capacity constraint, and allocation policy:
+---
 
-```python
-from rvp import AllocationProblem
-from rvp.utilities import CRRAUtility
-from rvp.constraints import CoverageConstraint
-from rvp.policies import RankingPolicy
+## Getting Started
 
-problem = AllocationProblem(
-    data=data,
-    utility=CRRAUtility(rho=2.0, b=100),        # CRRA utility with baseline benefit
-    constraint=CoverageConstraint(0.1, data.n),  # Can treat 10% of population
-    policy=RankingPolicy(ascending=True)         # Target lowest predicted values
-)
-```
+The best way to get started is the **[ACS Income notebook](examples/folktables-income/folktables-income.ipynb)**, which walks through the full toolkit step by step using US Census data (downloaded via the `folktables` package).
 
-**3. Evaluate** — compare prediction-based targeting vs random allocation:
+---
 
-```python
-results = problem.evaluate()
-print(results['total_utility'])   # Total welfare achieved
-print(results['mean_utility'])    # Average utility per treated individual
-print(results['utility_ratio'])   # e.g., 1.47 = 47% better than random
-```
+## How It Works
 
-## Examples
+An `AllocationProblem` combines four components:
 
-The `examples/` folder contains two case studies:
+| Component | What it encodes | Example |
+|---|---|---|
+| `AllocationData` | Predictions + ground truth | DataFrame with `predictions`, `ground_truth` |
+| `UtilityFunction` | How outcomes are valued | `CRRAUtility`, `PartitionedUtility` |
+| `ResourceConstraint` | Capacity limits | `CoverageConstraint` |
+| `Policy` | How predictions map to allocations | `RankingPolicy` (allocate to top-k) |
 
-### Poverty Targeting (`examples/poverty-targeting/`)
+**Policy levers** modify one or more components. Policy lever are typically parameterized by an intensity $\theta$ with an optional cost model:
 
-Cash transfer targeting using consumption predictions.
+| Lever | Modifies | $\theta$ controls |
+|---|---|---|
+| `PredictionImprovementLever` | Predictions | Error reduction (interpolation toward ground truth) |
+| `ExpandCoverageLever` | Constraint | Additional coverage (pp increase) |
+| `DataLabelingLever` | Predictions | Share of population with predictions |
+| `CRRABenefitLever` | Utility | Transfer amount per beneficiary |
 
-To reproduce:
-
-1. Download the Ethiopia’s 2015 Living Standards Measurement Survey from the [World Bank Micro Data Library](https://microdata.worldbank.org/index.php/catalog/2783)
-
-2. Run `poverty-targeting-preprocessing-and-model.ipynb` to process survey data and train the prediction model
-
-3. Open `poverty-targeting.ipynb` to run the lever comparison analysis
-
-### Employment Office (`examples/unemployment-targeting/`)
-
-Job seeker profiling for employment services.
-
-*Note: Due to the sensitive nature of the data, the underlying records are not publicly available but can be applied for at the [Research Data Centre (FDZ) of the Institute for Employment Research (IAB)](https://fdz.iab.de/en/our-data-products/individual-and-household-data/siab/).*
-
-## Core Concepts
-
-### The Allocation Problem
-
-An [`AllocationProblem`](rvp/problem.py) consists of:
-
-| Component | Description | Example |
-|-----------|-------------|---------|
-| [`AllocationData`](rvp/data.py) | Predictions and ground truth outcomes | DataFrame with `predicted_benefit`, `actual_benefit` |
-| [`Utility`](rvp/utilities/base.py) | How we value outcomes | `CRRAUtility` for diminishing returns |
-| [`Constraint`](rvp/constraints/base.py) | Resource limits | `CoverageConstraint` for capacity limits |
-| [`Policy`](rvp/policies/base.py) | How predictions map to allocations | `RankingPolicy` to treat top-k |
-
-### Policy Levers
-
-Levers modify the allocation problem. Each lever has an associated cost model. For example:
-
-| Lever | What it does | Key parameter | Cost model |
-|-------|--------------|---------------|------------|
-| [`DataLabelingLever`](rvp/levers/data_labeling.py) | Controls share of population with usable predictions | `label_share` | `n × label_share × cost_per_label` |
-| [`ExpandCoverageLever`](rvp/levers/expand_coverage.py) | Increases program capacity | `coverage_increase` | `n × coverage_increase × marginal_cost_per_person` |
-| [`CRRABenefitLever`](rvp/levers/crra_benefit.py) | Changes transfer amount per beneficiary | `new_benefit` | `n_beneficiaries × new_benefit` |
-| [`PredictionImprovementLever`](rvp/levers/prediction_improvement.py) | Interpolates predictions toward ground truth | `error_reduction` | Fixed cost (no cost-to-theta mapping) |
-
-**Applying a lever** — levers return a modified problem:
+Applying a lever returns a new problem:
 
 ```python
 from rvp.levers import ExpandCoverageLever
 
-capacity_lever = ExpandCoverageLever(name="Capacity", coverage_increase=0.05, marginal_cost_per_person=100)
-expanded_problem = capacity_lever.apply(problem)  # New problem with increased capacity
-expanded_problem.evaluate()
+lever = ExpandCoverageLever(name="Capacity", coverage_increase=0.05, marginal_cost_per_person=100)
+new_problem = lever.apply(problem)
+new_problem.evaluate()
 ```
+
+---
 
 ## Comparing Policy Levers
 
-The toolkit supports three types of comparisons based on available cost information.
+The toolkit supports three modes of comparison, depending on what cost information is available.
 
-**Setup** — define levers and comparison:
+### Budget optimization — costs known for all levers
+
+Find the welfare-maximizing split of a fixed budget across any number of levers:
+
+```python
+from rvp.comparison import optimize_budget_allocation, plot_budget_shares
+
+results = optimize_budget_allocation(
+    problem,
+    levers=[data_lever, capacity_lever],
+    budget_range=(0, 100_000),
+    n_budget_points=20,
+    grid_density=10,
+)
+plot_budget_shares(results)
+```
+
+### Equivalent cost — costs known for one lever
+
+What investment in lever B matches the welfare gain of lever A?
 
 ```python
 from rvp.comparison import LeverComparison
-from rvp.levers import DataLabelingLever, ExpandCoverageLever, PredictionImprovementLever
-
-data_lever = DataLabelingLever.from_data(
-    data=data,
-    label_share=0.2,         # Start at 20% labeled
-    cost_per_label=13.0,
-    ascending=True
-)
-
-capacity_lever = ExpandCoverageLever(
-    name="Capacity",
-    coverage_increase=0.1,
-    marginal_cost_per_person=100
-)
-
-prediction_lever = PredictionImprovementLever(
-    name="Prediction",
-    error_reduction=0.2
-)
 
 comparison = LeverComparison(problem, lever_a=prediction_lever, lever_b=capacity_lever)
+comparison.plot_welfare_difference(theta_range=(0, 0.5), swept_lever="a")
+comparison.plot_equivalent_cost(theta_range=(0, 0.5), swept_lever="a")
 ```
 
-### Q1: How should a fixed budget be allocated across levers?
+### Welfare curves — no cost information
 
-When costs are known for all levers, find optimal budget allocation:
-
-```python
-# Two-lever optimization (requires levers with cost mappings)
-comparison_with_costs = LeverComparison(problem, lever_a=data_lever, lever_b=capacity_lever)
-results = comparison_with_costs.optimize_budget(budget_range=[0, 100000])
-comparison_with_costs.plot_budget_optimization(results)
-```
-
-For three levers (with benefit increase as residual lever implying CRRA utility):
-
-```python
-from rvp.comparison import optimize_budget_with_residual_benefit, plot_budget_allocation_stacked
-
-results = optimize_budget_with_residual_benefit(
-    problem,
-    lever1=data_lever,
-    lever2=capacity_lever,
-    budget_range=[0, 100000]
-)
-plot_budget_allocation_stacked(results)
-```
-
-
-### Q2: What improvement would one lever need to match another?
-
-When costs are known for one lever but uncertain for another:
-
-```python
-# Compare prediction improvement (unknown cost) vs capacity (known cost)
-comparison = LeverComparison(problem, lever_a=prediction_lever, lever_b=capacity_lever)
-
-# Welfare difference as lever A varies
-comparison.plot_welfare_difference(
-    theta_range=(0, 0.5),
-    swept_lever='a'
-)
-
-# What budget for lever B achieves the same welfare as lever A at each theta?
-comparison.plot_equivalent_cost(
-    theta_range=(0, 0.5),
-    swept_lever='a'  # Sweep prediction, find equivalent capacity cost
-)
-```
-
-### Q3: How do levers compare in relative welfare impact?
-
-When costs are unavailable for both levers:
+Compare relative welfare impact across lever intensities:
 
 ```python
 from rvp.comparison import plot_welfare_curve
 
-# How does welfare change as we vary a single lever?
-plot_welfare_curve(
-    problem=problem,
-    lever=capacity_lever,
-    theta_range=(0, 0.5),
-    welfare_metric='mean_utility'
-)
-
-# 2D heatmap comparing two levers
-comparison.plot_welfare_heatmap(
-    theta_a_range=(0, 1.0),
-    theta_b_range=(0, 0.5),
-    vmin=-5, vmax=5
-)
+plot_welfare_curve(problem, lever=capacity_lever, theta_range=(0, 0.5))
+comparison.plot_welfare_heatmap(theta_a_range=(0, 1.0), theta_b_range=(0, 0.5))
 ```
+
+---
+
+## Examples
+
+| Example | Data | Access |
+|---|---|---|
+| **[ACS Income](examples/folktables-income/)** | Folktables (census) | Auto-downloaded |
+| **[Poverty Targeting](examples/poverty-targeting/)** | Ethiopia LSMS | [World Bank](https://microdata.worldbank.org/index.php/catalog/2783) |
+| **[Employment Office](examples/unemployment-targeting/)** | IAB SIAB | [FDZ](https://fdz.iab.de/en/our-data-products/individual-and-household-data/siab/) (restricted) |
+
+---
+
+## Citation
+
+```bibtex
+@inproceedings{rvp2026,
+  title     = {Empirically Understanding the Value of Prediction in Allocation},
+  author    = {Anonymous},
+  booktitle = {International Conference on Machine Learning (ICML)},
+  year      = {2026},
+  note      = {Under review}
+}
+```
+
+## License
+
+MIT

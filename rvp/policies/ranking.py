@@ -39,8 +39,8 @@ class RankingPolicy(Policy):
         self,
         rank_by: str = 'prediction',
         ascending: bool = False,
-        min_prediction: float | None = None,
-        min_utility: float | None = None,
+        min_prediction: Optional[float] = None,
+        min_utility: Optional[float] = None,
     ):
         """Initialize ranking policy.
 
@@ -106,9 +106,10 @@ class RankingPolicy(Policy):
         if not np.any(eligible):
             return actions
 
-        # Get per-unit costs and capacity
-        unit_costs = constraint.get_unit_costs(n)
+        # Get capacity and uniform unit cost
         capacity = constraint.get_capacity()
+        unit_costs = constraint.get_unit_costs(n)
+        unit_cost = unit_costs[0]
 
         # Get eligible indices sorted by score
         eligible_indices = np.where(eligible)[0]
@@ -118,20 +119,10 @@ class RankingPolicy(Policy):
             sorted_order = sorted_order[::-1]  # descending (highest first)
         ranked_indices = eligible_indices[sorted_order]
 
-        # Check if uniform costs (can use fast path)
-        if np.all(unit_costs == unit_costs[0]):
-            # Uniform costs: just take top k
-            unit_cost = unit_costs[0]
-            k = int(capacity // unit_cost)
-            k = min(k, len(ranked_indices))
-            actions[ranked_indices[:k]] = 1
-        else:
-            # Heterogeneous costs: greedy selection
-            current_cost = 0.0
-            for idx in ranked_indices:
-                if current_cost + unit_costs[idx] <= capacity:
-                    actions[idx] = 1
-                    current_cost += unit_costs[idx]
+        # Allocate to top k (uniform costs)
+        k = int(capacity // unit_cost)
+        k = min(k, len(ranked_indices))
+        actions[ranked_indices[:k]] = 1
 
         return actions
 
