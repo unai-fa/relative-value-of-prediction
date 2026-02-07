@@ -120,7 +120,7 @@ comparison.plot_welfare_heatmap(theta_a_range=(0, 1.0), theta_b_range=(0, 0.5))
 
 | Example | Data | Access |
 |---|---|---|
-| **[ACS Income](examples/folktables-income/)** | Folktables (census) | Public (via `folktables`) |
+| **[ACS Income](examples/folktables-income/)** | American Community Survey | Public (via `folktables`) |
 | **[Poverty Targeting](examples/poverty-targeting/)** | Ethiopia LSMS | [World Bank](https://microdata.worldbank.org/index.php/catalog/2783) |
 | **[Employment Office](examples/unemployment-targeting/)** | IAB SIAB | [FDZ](https://fdz.iab.de/en/our-data-products/individual-and-household-data/siab/) (restricted) |
 
