@@ -24,6 +24,22 @@ The best way to get started is the **[ACS Income notebook](examples/folktables-i
 
 ## How It Works
 
+```python
+from rvp import AllocationData, AllocationProblem
+from rvp.utilities import CRRAUtility
+from rvp.constraints import CoverageConstraint
+from rvp.policies import RankingPolicy
+
+data = AllocationData(df=df)  # DataFrame with 'predictions' and 'ground_truth' columns
+problem = AllocationProblem(
+    data=data,
+    utility=CRRAUtility(rho=2.0, b=100),
+    constraint=CoverageConstraint(0.10, data.n),
+    policy=RankingPolicy(ascending=True),
+)
+results = problem.evaluate()
+```
+
 An `AllocationProblem` combines four components:
 
 | Component | What it encodes | Example |
@@ -33,7 +49,7 @@ An `AllocationProblem` combines four components:
 | `ResourceConstraint` | Capacity limits | `CoverageConstraint` |
 | `Policy` | How predictions map to allocations | `RankingPolicy` (allocate to top-k) |
 
-**Policy levers** modify one or more components. Policy lever are typically parameterized by an intensity $\theta$ with an optional cost model:
+**Policy levers** modify one or more components. Policy levers are typically parameterized by an intensity $\theta$ with an optional cost model:
 
 | Lever | Modifies | $\theta$ controls |
 |---|---|---|
@@ -104,7 +120,7 @@ comparison.plot_welfare_heatmap(theta_a_range=(0, 1.0), theta_b_range=(0, 0.5))
 
 | Example | Data | Access |
 |---|---|---|
-| **[ACS Income](examples/folktables-income/)** | Folktables (census) | Auto-downloaded |
+| **[ACS Income](examples/folktables-income/)** | Folktables (census) | Public (via `folktables`) |
 | **[Poverty Targeting](examples/poverty-targeting/)** | Ethiopia LSMS | [World Bank](https://microdata.worldbank.org/index.php/catalog/2783) |
 | **[Employment Office](examples/unemployment-targeting/)** | IAB SIAB | [FDZ](https://fdz.iab.de/en/our-data-products/individual-and-household-data/siab/) (restricted) |
 
@@ -113,12 +129,12 @@ comparison.plot_welfare_heatmap(theta_a_range=(0, 1.0), theta_b_range=(0, 0.5))
 ## Citation
 
 ```bibtex
-@inproceedings{rvp2026,
-  title     = {Empirically Understanding the Value of Prediction in Allocation},
-  author    = {Anonymous},
-  booktitle = {International Conference on Machine Learning (ICML)},
-  year      = {2026},
-  note      = {Under review}
+@article{fischerabaigar2025rvp,
+  title   = {Empirically Understanding the Value of Prediction in Allocation},
+  author  = {Fischer-Abaigar, Unai and Aiken, Emily and Kern, Christoph and Perdomo, Juan C.},
+  journal = {arXiv preprint arXiv:XXXX.XXXXX},
+  year    = {2026}
+}
 }
 ```
 
