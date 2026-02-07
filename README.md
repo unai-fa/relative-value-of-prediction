@@ -9,8 +9,8 @@ When predictions guide who receives limited societal resources, for example, cas
 ## Installation
 
 ```bash
-git clone https://github.com/rvp-toolkit/rvp.git
-cd rvp
+git clone https://github.com/unai-fa/relative-value-of-prediction.git
+cd relative-value-of-prediction
 pip install -e .
 ```
 
