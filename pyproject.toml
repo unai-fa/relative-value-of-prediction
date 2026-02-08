@@ -1,4 +1,4 @@
-[build-system]
+but [build-system]
 requires = ["setuptools>=64", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
