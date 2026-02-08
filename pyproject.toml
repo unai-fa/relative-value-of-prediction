@@ -24,3 +24,6 @@ include = ["rvp*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[project.urls]
+Homepage = "https://github.com/unai-fa/relative-value-of-prediction"
