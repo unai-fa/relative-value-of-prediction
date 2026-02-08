@@ -1,3 +1,12 @@
+# relative value of prediction
+
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/unai-fa/relative-value-of-prediction/blob/main/LICENSE)
+
+<div align="center">
+  <img src="assets/relative-value-of-prediction.png" alt="Relative Value of Prediction" width="60%">
+  <h1>Relative Value of Prediction</h1>
+</div>
+
 `rvp` is a Python toolkit for evaluating the value of prediction for guiding the allocation of scarce resources.
 
 When predictions guide who receives limited societal resources, for example, cash transfers, job training or medical screenings, policymakers face a practical question: how valuable is improving predictions compared to other investments, such as expanding program capacity or increasing benefit levels? `rvp` provides the tools to answer this empirically, using your own data.
