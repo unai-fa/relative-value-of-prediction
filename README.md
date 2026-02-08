@@ -4,7 +4,7 @@
 
 <div align="center">
   <img src="assets/relative-value-of-prediction.png" alt="Relative Value of Prediction" width="60%">
-  <h1>Relative Value of Prediction</h1>
+  <h1></h1>
 </div>
 
 `rvp` is a Python toolkit for evaluating the value of prediction for guiding the allocation of scarce resources.
