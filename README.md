@@ -4,6 +4,8 @@ When predictions guide who receives limited societal resources, for example, cas
 
 > Companion to our paper *Empirically Understanding the Value of Prediction in Allocation* (Under Review, ICML 2026).
 
+`rvp` is under active development. We welcome contributions that expand functionality, add new policy levers, or apply the toolkit to new domains.
+
 ---
 
 ## Installation
