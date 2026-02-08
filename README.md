@@ -137,7 +137,6 @@ comparison.plot_welfare_heatmap(theta_a_range=(0, 1.0), theta_b_range=(0, 0.5))
   journal = {arXiv preprint arXiv:XXXX.XXXXX},
   year    = {2026}
 }
-}
 ```
 
 ## License
