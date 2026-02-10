@@ -11,7 +11,7 @@
 
 When predictions guide who receives limited societal resources, for example, cash transfers, job training or medical screenings, policymakers face a practical question: how valuable is improving predictions compared to other investments, such as expanding program capacity or increasing benefit levels? `rvp` provides the tools to answer this empirically, using your own data.
 
-> Companion to our paper *Empirically Understanding the Value of Prediction in Allocation* (Under Review).
+> Companion to our paper *[Empirically Understanding the Value of Prediction in Allocation](https://www.arxiv.org/abs/2602.08786)* (Under Review).
 
 `rvp` is under active development. We welcome contributions that expand functionality, add new policy levers, or apply the toolkit to new domains.
 
