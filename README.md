@@ -143,7 +143,7 @@ comparison.plot_welfare_heatmap(theta_a_range=(0, 1.0), theta_b_range=(0, 0.5))
 @article{fischerabaigar2025rvp,
   title   = {Empirically Understanding the Value of Prediction in Allocation},
   author  = {Fischer-Abaigar, Unai and Aiken, Emily and Kern, Christoph and Perdomo, Juan C.},
-  journal = {arXiv preprint arXiv:XXXX.XXXXX},
+  journal = {arXiv preprint arXiv:2602.08786},
   year    = {2026}
 }
 ```
