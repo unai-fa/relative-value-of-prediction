@@ -32,6 +32,11 @@ ENV/
 data/
 results/
 
+# Notebooks
+notebooks/
+README.html
+README_files/
+
 
 # Misc
 *.log

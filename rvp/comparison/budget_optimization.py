@@ -1,385 +1,467 @@
-"""Budget optimization across parameterized levers."""
+"""Budget optimization over design spaces."""
 
-from typing import TYPE_CHECKING, Tuple, Optional, List, Callable
+from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
+from itertools import product
+from typing import Any, Mapping, Optional, Sequence, Tuple, Union
+
 import numpy as np
 import pandas as pd
+from scipy.optimize import brentq
 
-if TYPE_CHECKING:
-    from ..problem import AllocationProblem
-    from ..levers import ParameterizedLever
-
-# Type alias for lever linkage function
-LeverLinkage = Callable[
-    ['ParameterizedLever', 'AllocationProblem', List['ParameterizedLever']],
-    'ParameterizedLever'
-]
+from ..design.dimension import DesignDimension
+from ..design.space import DesignSpace
 
 
-def _generate_simplex_grid(n_levers: int, total_budget: float, grid_density: int):
-    """Generate uniform grid points on the budget simplex.
-
-    For n_levers, generates all tuples (b_1, ..., b_n) where sum = total_budget,
-    uniformly covering the simplex. Uses integer compositions:
-    all (i_1, ..., i_n) with i_k >= 0 and sum = grid_density.
-
-    Number of points: C(grid_density + n_levers - 1, n_levers - 1)
-    For n=2, d=30: 31 points. For n=3, d=30: 496 points.
-
-    Args:
-        n_levers: Number of levers
-        total_budget: Total budget to allocate
-        grid_density: Number of steps (higher = finer grid)
-
-    Yields:
-        Tuples of (budget_1, budget_2, ..., budget_n) that sum to total_budget
-    """
-    if n_levers == 1:
-        yield (total_budget,)
-        return
-
-    if n_levers == 2:
-        for i in range(grid_density + 1):
-            b1 = total_budget * i / grid_density
-            b2 = total_budget - b1
-            yield (b1, b2)
-        return
-
-    # General case: enumerate all integer compositions summing to grid_density
-    def _compositions(n, total, prefix=()):
-        if n == 1:
-            yield prefix + (total_budget * total / grid_density,)
-            return
-        for i in range(total + 1):
-            yield from _compositions(
-                n - 1, total - i,
-                prefix + (total_budget * i / grid_density,)
-            )
-
-    yield from _compositions(n_levers, grid_density)
+Config = Mapping[DesignDimension, Any]
+GridSize = Union[int, Sequence[int], Mapping[DesignDimension, int]]
 
 
-def optimize_budget_allocation(
-    problem: 'AllocationProblem',
-    levers: List['ParameterizedLever'],
-    budget_range: Tuple[float, float],
-    n_budget_points: int = 20,
-    grid_density: int = 10,
-    lever_linkage: Optional[LeverLinkage] = None,
-    max_datasets: Optional[int] = None,
-    welfare_metric: str = 'total_utility',
-    verbose: bool = False,
-) -> pd.DataFrame:
-    """Optimize budget allocation across multiple levers.
-
-    Grid searches over budget splits to find the allocation that
-    maximizes welfare. Levers are applied sequentially in list order.
-
-    All levers must implement:
-    - compute_cost(problem) -> float
-    - for_budget(budget, problem) -> ParameterizedLever
-
-    Args:
-        problem: Allocation problem with (potentially multiple) datasets
-        levers: List of parameterized levers (1-3 recommended, more gets slow)
-        budget_range: (min, max) total budget to sweep
-        n_budget_points: Number of budget points to evaluate
-        grid_density: Grid points per lever dimension
-        lever_linkage: Optional function to update lever[i]'s cost parameters
-            based on problem state after applying levers[0..i-1].
-            Signature: (lever, problem_after_previous, applied_levers) -> lever
-        max_datasets: If set, only use first N datasets (for faster runs)
-        welfare_metric: Which metric to optimize ('total_utility', 'utility_ratio', etc.)
-        verbose: If True, print progress
-
-    Returns:
-        DataFrame with columns:
-        - budget: total budget
-        - optimal_{lever.name}_share: fraction of budget on each lever
-        - optimal_{lever.name}_theta: theta value for each lever
-        - optimal_utility: utility at optimal allocation
-    """
-    from ..problem import AllocationProblem
-    from ..data import AllocationData
-
-    if len(levers) == 0:
-        raise ValueError("Must provide at least one lever")
-
-    # Validate levers have cost mapping
-    for lever in levers:
-        try:
-            lever.for_budget(1.0, problem)
-        except NotImplementedError:
-            raise ValueError(f"{lever.name} doesn't support for_budget()")
-
-    # Optionally limit datasets for faster runs
-    if max_datasets is not None and problem.data.n_datasets > max_datasets:
-        limited_dfs = [problem.data._dfs[i] for i in range(max_datasets)]
-        limited_data = AllocationData(
-            df=limited_dfs,
-            covariate_cols=problem.data.covariate_cols,
-            ground_truth_col=problem.data.ground_truth_col,
-            predictions_col=problem.data.predictions_col,
-        )
-        problem = AllocationProblem(
-            data=limited_data,
-            utility=problem.utility,
-            constraint=problem.constraint,
-            policy=problem.policy,
-        )
-
-    budgets = np.linspace(budget_range[0], budget_range[1], n_budget_points)
-    results = []
-    n_datasets = problem.data.n_datasets
-    n_levers = len(levers)
-
-    for i, B in enumerate(budgets):
-        if verbose:
-            print(f"Budget {i+1}/{n_budget_points}: ${B:.0f}", end='\r')
-
-        # Track best allocation for each dataset
-        best_per_dataset = [
-            {'utility': -np.inf, 'budgets': None, 'thetas': None}
-            for _ in range(n_datasets)
-        ]
-
-        # Grid search over budget splits
-        for budget_split in _generate_simplex_grid(n_levers, B, grid_density):
-            try:
-                current_problem = problem
-                applied_levers = []
-                lever_thetas = []
-
-                for j, (lever, budget_j) in enumerate(zip(levers, budget_split)):
-                    # Apply linkage to update cost parameters (for levers after first)
-                    lever_for_budget = lever
-                    if lever_linkage is not None and j > 0:
-                        lever_for_budget = lever_linkage(lever, current_problem, applied_levers)
-
-                    # Get lever at this budget and apply
-                    lever_at_budget = lever_for_budget.for_budget(budget_j, current_problem)
-                    current_problem = lever_at_budget.apply(current_problem)
-                    applied_levers.append(lever_at_budget)
-                    lever_thetas.append(lever_at_budget.theta)
-
-                # Evaluate each dataset and track best per dataset
-                for dataset_idx in range(n_datasets):
-                    result = current_problem._evaluate_single(dataset_idx)
-                    utility = result[welfare_metric]
-
-                    if utility is not None and utility > best_per_dataset[dataset_idx]['utility']:
-                        best_per_dataset[dataset_idx] = {
-                            'utility': utility,
-                            'budgets': budget_split,
-                            'thetas': lever_thetas,
-                        }
-            except Exception as e:
-                if verbose:
-                    print(f"\nError at B={B}, split={budget_split}: {e}")
-                continue
-
-        # Average the optimal decisions across datasets
-        valid_datasets = [d for d in best_per_dataset if d['budgets'] is not None]
-        if valid_datasets:
-            n_valid = len(valid_datasets)
-
-            row = {'budget': B}
-
-            # Compute averages for each lever
-            for j, lever in enumerate(levers):
-                avg_budget = sum(d['budgets'][j] for d in valid_datasets) / n_valid
-                avg_theta = sum(d['thetas'][j] for d in valid_datasets) / n_valid
-                share = avg_budget / B if B > 0 else 0
-
-                row[f'optimal_{lever.name}_share'] = share
-                row[f'optimal_{lever.name}_theta'] = avg_theta
-
-            avg_utility = sum(d['utility'] for d in valid_datasets) / n_valid
-            row['optimal_utility'] = avg_utility
-
-            results.append(row)
-
-    if verbose:
-        print()  # newline after progress
-
-    return pd.DataFrame(results)
-
-
-# Default color palette for plotting
-DEFAULT_COLORS = ['#2E86AB', '#A23B72', '#F18F01', '#8338EC', '#06D6A0']
-
-
-def _extract_lever_names(results: pd.DataFrame, suffix: str) -> List[str]:
-    """Extract lever names from columns matching 'optimal_*_{suffix}'."""
-    import re
-    names = []
-    pattern = rf'optimal_(.+)_{suffix}'
-    for col in results.columns:
-        match = re.match(pattern, col)
-        if match:
-            names.append(match.group(1))
-    return names
-
-
-def _setup_plot_style():
-    """Set up publication-quality plotting defaults."""
-    import matplotlib.pyplot as plt
-    plt.rcParams['text.usetex'] = True
-    plt.rcParams['font.family'] = 'serif'
-    plt.rcParams['font.size'] = 16
-    plt.rcParams['axes.labelsize'] = 20
-    plt.rcParams['axes.titlesize'] = 20
-    plt.rcParams['xtick.labelsize'] = 20
-    plt.rcParams['ytick.labelsize'] = 20
-    plt.rcParams['legend.fontsize'] = 14
-
-
-def plot_budget_shares(
-    results: pd.DataFrame,
-    ax=None,
-    stacked: bool = True,
-    show_levers: Optional[List[str]] = None,
-    labels: Optional[List[str]] = None,
-    colors: Optional[List[str]] = None,
-    xlabel: str = 'Budget',
-    ylabel: str = 'Budget Share',
-    alpha: float = 0.8,
-    figsize: Tuple[float, float] = (8, 5),
-    linewidth: float = 6,
+def optimize_budget(
+    space: DesignSpace,
+    cost_surface,
+    budgets: Optional[Sequence[float]] = None,
+    budget_range: Optional[Tuple[float, float]] = None,
+    n_budget_points: int = 50,
+    dims: Optional[Sequence[DesignDimension]] = None,
+    fixed: Optional[Config] = None,
+    status_quo: Optional[Config] = None,
+    n: GridSize = 50,
+    welfare_metric: str = "mean_utility",
+    return_candidates: bool = False,
 ):
-    """Plot budget shares for levers.
+    """Find the welfare-maximizing design config at each budget.
 
-    Works for any number of levers (auto-detected from columns).
+    The optimizer evaluates a design grid once, then reuses those candidate
+    configs for every budget. ``cost_surface`` is treated as a pure total-cost
+    function. If ``status_quo`` is provided, budgets are interpreted as
+    incremental and feasibility uses ``cost_surface.improvement_cost``.
 
-    Args:
-        results: DataFrame from optimize_budget_allocation
-        ax: Matplotlib axis. If None, creates new figure.
-        stacked: If True, stacked area chart. If False, line plot.
-        show_levers: List of lever names to include. If None, show all.
-        labels: Custom labels (default: lever names from columns)
-        colors: Custom colors (default: preset palette)
-        xlabel: X-axis label
-        ylabel: Y-axis label
-        alpha: Transparency for stacked areas
-        figsize: Figure size if creating new figure
-        linewidth: Line width for line plots
-
-    Returns:
-        Matplotlib axis
+    Exact welfare ties are broken by choosing the lowest-cost configuration.
     """
-    import matplotlib.pyplot as plt
-    import matplotlib.ticker as mtick
+    budget_values = _resolve_budgets(
+        budgets=budgets,
+        budget_range=budget_range,
+        n_budget_points=n_budget_points,
+    )
+    fixed = dict(fixed) if fixed else {}
+    status_quo = dict(status_quo) if status_quo else None
+    dims = _resolve_dims(space=space, dims=dims, fixed=fixed)
 
-    all_lever_names = _extract_lever_names(results, 'share')
+    candidates = _candidate_grid(
+        space=space,
+        cost_surface=cost_surface,
+        dims=dims,
+        fixed=fixed,
+        status_quo=status_quo,
+        n=n,
+        welfare_metric=welfare_metric,
+    )
+    results = _optimize_over_budgets(
+        candidates=candidates,
+        budgets=budget_values,
+        dims=dims,
+    )
 
-    if show_levers is not None:
-        lever_names = [n for n in all_lever_names if n in show_levers]
-        # Stacked area with a subset is misleading (won't sum to 1)
-        if stacked and len(lever_names) < len(all_lever_names):
-            stacked = False
-    else:
-        lever_names = all_lever_names
-
-    n_levers = len(lever_names)
-
-    if n_levers == 0:
-        raise ValueError("No share columns found in results")
-
-    if colors is None:
-        colors = DEFAULT_COLORS[:n_levers]
-    if labels is None:
-        labels = lever_names
-
-    if ax is None:
-        _setup_plot_style()
-        _, ax = plt.subplots(figsize=figsize)
-
-    x = results['budget'].values
-    share_cols = [f'optimal_{name}_share' for name in lever_names]
-    shares = [results[col].values for col in share_cols]
-
-    if stacked:
-        # Stacked area chart
-        cumulative = np.zeros_like(x)
-        for i, (share, color, label) in enumerate(zip(shares, colors, labels)):
-            ax.fill_between(x, cumulative, cumulative + share,
-                           color=color, alpha=alpha, label=label)
-            cumulative = cumulative + share
-    else:
-        # Line plot
-        for share, color, label in zip(shares, colors, labels):
-            ax.plot(x, share, linewidth=linewidth, color=color, label=label)
-
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_ylim(0, 1)
-    ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0, decimals=0))
-    ax.legend()
-    ax.grid(alpha=0.3)
-
-    return ax
+    if return_candidates:
+        return results, candidates
+    return results
 
 
-def plot_budget_thetas(
-    results: pd.DataFrame,
-    show_levers: Optional[List[str]] = None,
-    labels: Optional[List[str]] = None,
-    colors: Optional[List[str]] = None,
-    xlabel: str = 'Budget',
-    ylabels: Optional[List[str]] = None,
-    figsize: Tuple[float, float] = (8, 5),
-    linewidth: float = 6,
-) -> List:
-    """Plot optimal theta vs budget, one subplot per lever.
+def optimize_budget_frontier(
+    space: DesignSpace,
+    cost_surface,
+    solve_dim: DesignDimension,
+    budgets: Optional[Sequence[float]] = None,
+    budget_range: Optional[Tuple[float, float]] = None,
+    n_budget_points: int = 50,
+    dims: Optional[Sequence[DesignDimension]] = None,
+    fixed: Optional[Config] = None,
+    status_quo: Optional[Config] = None,
+    n: GridSize = 50,
+    welfare_metric: str = "mean_utility",
+    return_candidates: bool = False,
+):
+    """Optimize along exact-spend continuous budget frontiers.
 
-    Each lever gets its own full-size plot with independent y-axis,
-    since thetas have different scales and units across levers.
-
-    Args:
-        results: DataFrame from optimize_budget_allocation
-        show_levers: List of lever names to include. If None, show all.
-        labels: Custom title labels per subplot (default: lever names)
-        colors: Custom colors per subplot (default: preset palette)
-        xlabel: X-axis label for all subplots
-        ylabels: Custom y-axis labels per subplot (default: 'Optimal {name}')
-        figsize: Figure size per subplot
-        linewidth: Line width
-
-    Returns:
-        List of matplotlib axes, one per lever
+    This optimizer grids all swept dimensions except ``solve_dim``. For each
+    budget and partial grid config, it solves ``solve_dim`` so the candidate
+    spends the budget exactly. It is intended for smooth, monotone continuous
+    cost surfaces where exact budget frontiers are meaningful.
     """
-    import matplotlib.pyplot as plt
+    budget_values = _resolve_budgets(
+        budgets=budgets,
+        budget_range=budget_range,
+        n_budget_points=n_budget_points,
+    )
+    fixed = dict(fixed) if fixed else {}
+    status_quo = dict(status_quo) if status_quo else None
+    dims = _resolve_dims(space=space, dims=dims, fixed=fixed)
+    _validate_frontier_solve_dim(solve_dim=solve_dim, dims=dims)
 
-    lever_names = _extract_lever_names(results, 'theta')
+    result_rows = []
+    candidate_rows = []
+    for budget in budget_values:
+        candidates = _frontier_candidates_for_budget(
+            space=space,
+            cost_surface=cost_surface,
+            budget=float(budget),
+            dims=dims,
+            solve_dim=solve_dim,
+            fixed=fixed,
+            status_quo=status_quo,
+            n=n,
+            welfare_metric=welfare_metric,
+        )
+        candidate_rows.extend(candidates)
+        result_rows.append(
+            _optimize_frontier_budget(
+                candidates=candidates,
+                budget=float(budget),
+                dims=dims,
+            )
+        )
 
-    if show_levers is not None:
-        lever_names = [n for n in lever_names if n in show_levers]
-
-    n_levers = len(lever_names)
-
-    if n_levers == 0:
-        raise ValueError("No theta columns found in results")
-
-    if colors is None:
-        colors = DEFAULT_COLORS[:n_levers]
-    if labels is None:
-        labels = lever_names
-    if ylabels is None:
-        ylabels = [f'Optimal {name}' for name in lever_names]
-
-    _setup_plot_style()
-    axes = []
-    x = results['budget'].values
-
-    for name, color, label, ylabel in zip(lever_names, colors, labels, ylabels):
-        fig, ax = plt.subplots(figsize=figsize)
-        theta_col = f'optimal_{name}_theta'
-        ax.plot(x, results[theta_col].values, linewidth=linewidth, color=color)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.set_title(label)
-        ax.grid(alpha=0.3)
-        axes.append(ax)
-
-    return axes
+    results = pd.DataFrame(result_rows)
+    if return_candidates:
+        return results, pd.DataFrame(candidate_rows)
+    return results
 
 
+def _resolve_budgets(
+    budgets: Optional[Sequence[float]],
+    budget_range: Optional[Tuple[float, float]],
+    n_budget_points: int,
+) -> np.ndarray:
+    if budgets is not None and budget_range is not None:
+        raise ValueError("Use only one of budgets or budget_range")
+    if budgets is None and budget_range is None:
+        raise ValueError("Provide either budgets or budget_range")
+
+    if budgets is not None:
+        values = np.asarray(budgets, dtype=float)
+        if values.ndim != 1:
+            raise ValueError("budgets must be one-dimensional")
+        return values
+
+    if n_budget_points < 1:
+        raise ValueError(f"n_budget_points must be >= 1, got {n_budget_points}")
+    if len(budget_range) != 2:
+        raise ValueError("budget_range must be a (low, high) tuple")
+    low, high = budget_range
+    return np.linspace(float(low), float(high), int(n_budget_points))
+
+
+def _resolve_dims(
+    space: DesignSpace,
+    dims: Optional[Sequence[DesignDimension]],
+    fixed: Config,
+) -> Sequence[DesignDimension]:
+    if dims is None:
+        resolved = [dim for dim in space.dimensions if dim not in fixed]
+    else:
+        resolved = list(dims)
+
+    for dim in resolved:
+        if dim not in space.dimensions:
+            raise KeyError(f"{dim!r} is not a dimension of this space")
+        if dim in fixed:
+            raise ValueError(f"{dim!r} cannot be both swept and fixed")
+    for dim in fixed:
+        if dim not in space.dimensions:
+            raise KeyError(f"{dim!r} is not a dimension of this space")
+    return resolved
+
+
+def _validate_frontier_solve_dim(
+    solve_dim: DesignDimension,
+    dims: Sequence[DesignDimension],
+) -> None:
+    if solve_dim not in dims:
+        raise ValueError("solve_dim must be one of the swept dims")
+    if solve_dim.is_discrete:
+        raise ValueError("solve_dim must be continuous")
+
+    low, high = solve_dim.bounds
+    if not all(np.isfinite([float(low), float(high)])):
+        raise ValueError("solve_dim bounds must be finite")
+    if float(low) >= float(high):
+        raise ValueError("solve_dim bounds must satisfy low < high")
+
+
+def _candidate_grid(
+    space: DesignSpace,
+    cost_surface,
+    dims: Sequence[DesignDimension],
+    fixed: Config,
+    status_quo: Optional[Config],
+    n: GridSize,
+    welfare_metric: str,
+) -> pd.DataFrame:
+    grids = [
+        dim.grid(_n_for_dim(n=n, dim=dim, index=i))
+        for i, dim in enumerate(dims)
+    ]
+    rows = []
+    for values in product(*grids):
+        config = {**fixed, **dict(zip(dims, values))}
+        below_status_quo = (
+            status_quo is not None
+            and _is_below_status_quo(config=config, status_quo=status_quo, dims=dims)
+        )
+        cost = (
+            cost_surface.improvement_cost(config, status_quo)
+            if status_quo is not None
+            else cost_surface.cost(config)
+        )
+        row = {
+            "config": config,
+            "welfare": space.welfare_at(config, metric=welfare_metric),
+            "cost": float(cost),
+            "below_status_quo": bool(below_status_quo),
+        }
+        for dim, value in zip(dims, values):
+            row[_candidate_theta_column(dim)] = value
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def _frontier_candidates_for_budget(
+    space: DesignSpace,
+    cost_surface,
+    budget: float,
+    dims: Sequence[DesignDimension],
+    solve_dim: DesignDimension,
+    fixed: Config,
+    status_quo: Optional[Config],
+    n: GridSize,
+    welfare_metric: str,
+) -> list[dict[str, Any]]:
+    grid_dims = [dim for dim in dims if dim != solve_dim]
+    grid_indices = [dims.index(dim) for dim in grid_dims]
+    grids = [
+        dim.grid(_n_for_dim(n=n, dim=dim, index=index))
+        for dim, index in zip(grid_dims, grid_indices)
+    ]
+    grid_values = product(*grids) if grids else [()]
+
+    rows = []
+    for values in grid_values:
+        partial_config = {**fixed, **dict(zip(grid_dims, values))}
+        solved_value = _solve_frontier_theta(
+            cost_surface=cost_surface,
+            budget=budget,
+            solve_dim=solve_dim,
+            partial_config=partial_config,
+            status_quo=status_quo,
+        )
+        if solved_value is None:
+            continue
+
+        config = {**partial_config, solve_dim: solved_value}
+        below_status_quo = (
+            status_quo is not None
+            and _is_below_status_quo(config=config, status_quo=status_quo, dims=dims)
+        )
+        if below_status_quo:
+            continue
+
+        cost = (
+            cost_surface.improvement_cost(config, status_quo)
+            if status_quo is not None
+            else cost_surface.cost(config)
+        )
+        if not np.isfinite(float(cost)):
+            continue
+
+        row = {
+            "budget": float(budget),
+            "config": config,
+            "welfare": space.welfare_at(config, metric=welfare_metric),
+            "cost": float(cost),
+            "below_status_quo": False,
+        }
+        for dim in dims:
+            row[_candidate_theta_column(dim)] = config[dim]
+        rows.append(row)
+
+    return rows
+
+
+def _solve_frontier_theta(
+    cost_surface,
+    budget: float,
+    solve_dim: DesignDimension,
+    partial_config: Config,
+    status_quo: Optional[Config],
+) -> Optional[float]:
+    low, high = (float(value) for value in solve_dim.bounds)
+    if (
+        status_quo is not None
+        and solve_dim in status_quo
+        and _is_numeric(status_quo[solve_dim])
+    ):
+        low = max(low, float(status_quo[solve_dim]))
+    if low > high:
+        return None
+
+    def objective(theta: float) -> float:
+        config = {**partial_config, solve_dim: theta}
+        cost = (
+            cost_surface.improvement_cost(config, status_quo)
+            if status_quo is not None
+            else cost_surface.cost(config)
+        )
+        return float(cost) - float(budget)
+
+    try:
+        f_low = objective(low)
+        f_high = objective(high)
+    except (ArithmeticError, ValueError, TypeError, KeyError, OverflowError):
+        return None
+
+    if not np.isfinite(f_low) or not np.isfinite(f_high):
+        return None
+    if np.isclose(f_low, 0.0, rtol=1e-10, atol=1e-8):
+        return float(low)
+    if np.isclose(f_high, 0.0, rtol=1e-10, atol=1e-8):
+        return float(high)
+    if np.signbit(f_low) == np.signbit(f_high):
+        return None
+
+    try:
+        return float(brentq(objective, low, high, xtol=1e-10, rtol=1e-10))
+    except (ArithmeticError, ValueError, TypeError, RuntimeError, OverflowError):
+        return None
+
+
+def _optimize_frontier_budget(
+    candidates: Sequence[Mapping[str, Any]],
+    budget: float,
+    dims: Sequence[DesignDimension],
+) -> dict[str, Any]:
+    row = {"budget": float(budget)}
+    if not candidates:
+        row.update(
+            {
+                "optimal_welfare": np.nan,
+                "optimal_cost": np.nan,
+                "unspent_budget": np.nan,
+            }
+        )
+        for dim in dims:
+            row[_result_theta_column(dim)] = np.nan
+        return row
+
+    welfare = np.asarray([candidate["welfare"] for candidate in candidates], dtype=float)
+    costs = np.asarray([candidate["cost"] for candidate in candidates], dtype=float)
+    feasible = np.isfinite(welfare) & np.isfinite(costs)
+    if not np.any(feasible):
+        row.update(
+            {
+                "optimal_welfare": np.nan,
+                "optimal_cost": np.nan,
+                "unspent_budget": np.nan,
+            }
+        )
+        for dim in dims:
+            row[_result_theta_column(dim)] = np.nan
+        return row
+
+    feasible_idx = np.flatnonzero(feasible)
+    best_local = np.lexsort((costs[feasible_idx], -welfare[feasible_idx]))[0]
+    best = candidates[int(feasible_idx[best_local])]
+
+    row.update(
+        {
+            "optimal_welfare": float(best["welfare"]),
+            "optimal_cost": float(best["cost"]),
+            "unspent_budget": float(budget) - float(best["cost"]),
+        }
+    )
+    for dim in dims:
+        row[_result_theta_column(dim)] = best[_candidate_theta_column(dim)]
+    return row
+
+
+def _optimize_over_budgets(
+    candidates: pd.DataFrame,
+    budgets: np.ndarray,
+    dims: Sequence[DesignDimension],
+) -> pd.DataFrame:
+    rows = []
+    feasible_base = ~candidates["below_status_quo"].to_numpy(dtype=bool)
+    costs = candidates["cost"].to_numpy(dtype=float)
+    welfare = candidates["welfare"].to_numpy(dtype=float)
+
+    for budget in budgets:
+        feasible = feasible_base & (costs <= float(budget))
+        row = {"budget": float(budget)}
+        if not np.any(feasible):
+            row.update(
+                {
+                    "optimal_welfare": np.nan,
+                    "optimal_cost": np.nan,
+                    "unspent_budget": np.nan,
+                }
+            )
+            for dim in dims:
+                row[_result_theta_column(dim)] = np.nan
+            rows.append(row)
+            continue
+
+        feasible_idx = np.flatnonzero(feasible)
+        best_local = np.lexsort((costs[feasible_idx], -welfare[feasible_idx]))[0]
+        best_idx = feasible_idx[best_local]
+        best = candidates.iloc[int(best_idx)]
+
+        row.update(
+            {
+                "optimal_welfare": float(best["welfare"]),
+                "optimal_cost": float(best["cost"]),
+                "unspent_budget": float(budget) - float(best["cost"]),
+            }
+        )
+        for dim in dims:
+            row[_result_theta_column(dim)] = best[_candidate_theta_column(dim)]
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def _n_for_dim(n: GridSize, dim: DesignDimension, index: int) -> int:
+    if isinstance(n, int):
+        return int(n)
+    if isinstance(n, MappingABC):
+        return int(n.get(dim, 50))
+    if isinstance(n, SequenceABC) and not isinstance(n, (str, bytes)):
+        return int(n[index])
+    return int(n)
+
+
+def _is_below_status_quo(
+    config: Config,
+    status_quo: Config,
+    dims: Sequence[DesignDimension],
+) -> bool:
+    for dim in dims:
+        if dim not in status_quo or dim not in config:
+            continue
+        value = config[dim]
+        status_quo_value = status_quo[dim]
+        if _is_numeric(value) and _is_numeric(status_quo_value):
+            if float(value) < float(status_quo_value):
+                return True
+    return False
+
+
+def _candidate_theta_column(dim: DesignDimension) -> str:
+    return f"{dim.name}_theta"
+
+
+def _result_theta_column(dim: DesignDimension) -> str:
+    return f"optimal_{dim.name}_theta"
+
+
+def _is_numeric(value) -> bool:
+    return isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, bool)

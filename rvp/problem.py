@@ -1,5 +1,6 @@
 """Allocation problem definition."""
 
+from collections.abc import Callable
 from typing import Dict, Any, Optional, TYPE_CHECKING
 import numpy as np
 
@@ -43,16 +44,18 @@ class AllocationProblem:
         self.constraint = constraint
         self.policy = policy
 
-    def evaluate(self, subgroup_mask: Optional[np.ndarray] = None) -> Dict[str, Any]:
+    def evaluate(self, subgroup_mask: Optional[np.ndarray | Callable] = None) -> Dict[str, Any]:
         """Evaluate the problem's policy.
 
         If the data has multiple datasets, evaluates each and returns
         averaged results.
 
         Args:
-            subgroup_mask: Optional boolean mask to compute welfare only for a subgroup.
-                          If provided, utility metrics are computed only for masked individuals.
-                          Only valid for single-dataset case.
+            subgroup_mask: Optional boolean mask or callable to compute welfare only for
+                          a subgroup. If callable, it is called as
+                          ``subgroup_mask(df)`` for each dataset DataFrame and must
+                          return a boolean mask. If provided, utility metrics are
+                          computed only for masked individuals.
 
         Returns:
             Dictionary containing:
@@ -61,31 +64,28 @@ class AllocationProblem:
                 - n_allocated: Number of units allocated to
                 - actions: The actions taken (None if multiple datasets)
         """
-        if self.data.n_datasets == 1:
-            return self._evaluate_single(0, subgroup_mask)
-
-        if subgroup_mask is not None:
-            raise ValueError("subgroup_mask not supported with multiple datasets")
-
-        # Multiple datasets: evaluate each and average
         results = []
         for i in range(self.data.n_datasets):
-            results.append(self._evaluate_single(i))
+            results.append(self._evaluate_single(i, subgroup_mask))
+
+        if self.data.n_datasets == 1:
+            return results[0]
 
         return self._average_results(results)
 
     def _evaluate_single(
         self,
         dataset_index: int = 0,
-        subgroup_mask: Optional[np.ndarray] = None,
+        subgroup_mask: Optional[np.ndarray | Callable] = None,
     ) -> Dict[str, Any]:
         """Evaluate policy for a single dataset.
 
         Args:
             dataset_index: Index of dataset to evaluate.
-            subgroup_mask: Optional boolean mask for subgroup evaluation.
+            subgroup_mask: Optional boolean mask or callable for subgroup evaluation.
         """
         dataset = self.data.get_dataset(dataset_index)
+        resolved_subgroup_mask = self._resolve_subgroup_mask(subgroup_mask, dataset)
 
         # Get actions from policy
         actions = self.policy(dataset.predictions, self.constraint, self.utility)
@@ -112,9 +112,9 @@ class AllocationProblem:
         utilities = self.utility.compute(dataset.y, actions)
 
         # Filter to subgroup if mask provided
-        if subgroup_mask is not None:
-            utilities = utilities[subgroup_mask]
-            actions_for_count = actions[subgroup_mask]
+        if resolved_subgroup_mask is not None:
+            utilities = utilities[resolved_subgroup_mask]
+            actions_for_count = actions[resolved_subgroup_mask]
         else:
             actions_for_count = actions
 
@@ -125,7 +125,7 @@ class AllocationProblem:
         # Only available with constant unit costs
         try:
             self._check_unit_costs(dataset.n)
-            random_result = self._evaluate_random_single(dataset_index, subgroup_mask)
+            random_result = self._evaluate_random_single(dataset_index, resolved_subgroup_mask)
             random_utility = random_result['total_utility']
             utility_ratio = total_utility / random_utility if random_utility != 0 else None
         except ValueError:
@@ -168,7 +168,7 @@ class AllocationProblem:
             )
         return unit_costs[0]
 
-    def evaluate_random(self, subgroup_mask: Optional[np.ndarray] = None) -> Dict[str, Any]:
+    def evaluate_random(self, subgroup_mask: Optional[np.ndarray | Callable] = None) -> Dict[str, Any]:
         """Evaluate expected welfare under random allocation.
 
         Computes expected utility analytically: each individual has
@@ -179,29 +179,31 @@ class AllocationProblem:
         If data has multiple datasets, averages results across them.
 
         Args:
-            subgroup_mask: Optional boolean mask to compute welfare only for a subgroup.
-                          Only valid for single-dataset case.
+            subgroup_mask: Optional boolean mask or callable to compute welfare only for
+                          a subgroup. If callable, it is called as
+                          ``subgroup_mask(df)`` for each dataset DataFrame and must
+                          return a boolean mask.
 
         Returns:
             Dictionary with total_utility, mean_utility, n_allocated
         """
-        if self.data.n_datasets > 1:
-            if subgroup_mask is not None:
-                raise ValueError("subgroup_mask not supported with multiple datasets")
-            results = []
-            for i in range(self.data.n_datasets):
-                results.append(self._evaluate_random_single(i))
-            return self._average_results(results)
+        results = []
+        for i in range(self.data.n_datasets):
+            results.append(self._evaluate_random_single(i, subgroup_mask))
 
-        return self._evaluate_random_single(0, subgroup_mask)
+        if self.data.n_datasets == 1:
+            return results[0]
+
+        return self._average_results(results)
 
     def _evaluate_random_single(
         self,
         dataset_index: int = 0,
-        subgroup_mask: Optional[np.ndarray] = None,
+        subgroup_mask: Optional[np.ndarray | Callable] = None,
     ) -> Dict[str, Any]:
         """Evaluate random allocation for a single dataset."""
         dataset = self.data.get_dataset(dataset_index)
+        resolved_subgroup_mask = self._resolve_subgroup_mask(subgroup_mask, dataset)
         y = dataset.y
         n = len(y)
 
@@ -215,11 +217,11 @@ class AllocationProblem:
         u_if_not_allocated = self.utility.compute(y, np.zeros(n))
         expected_utilities = p * u_if_allocated + (1 - p) * u_if_not_allocated
 
-        if subgroup_mask is not None:
-            expected_utilities = expected_utilities[subgroup_mask]
+        if resolved_subgroup_mask is not None:
+            expected_utilities = expected_utilities[resolved_subgroup_mask]
 
         total_utility = float(np.sum(expected_utilities))
-        n_subgroup = np.sum(subgroup_mask) if subgroup_mask is not None else n
+        n_subgroup = np.sum(resolved_subgroup_mask) if resolved_subgroup_mask is not None else n
 
         return {
             "total_utility": total_utility,
@@ -228,3 +230,31 @@ class AllocationProblem:
             "n_allocated": n_to_allocate,
             "actions": None,
         }
+
+    def _resolve_subgroup_mask(
+        self,
+        subgroup_mask: Optional[np.ndarray | Callable],
+        dataset: AllocationData,
+    ) -> Optional[np.ndarray]:
+        """Return a validated boolean subgroup mask for one dataset."""
+        if subgroup_mask is None:
+            return None
+
+        if callable(subgroup_mask):
+            subgroup_mask = subgroup_mask(dataset.df_single)
+
+        mask = np.asarray(subgroup_mask)
+        if mask.ndim != 1:
+            raise ValueError(
+                f"subgroup_mask must be one-dimensional, got shape {mask.shape}"
+            )
+        if mask.shape[0] != dataset.n:
+            raise ValueError(
+                f"subgroup_mask has length {mask.shape[0]} but data has {dataset.n} samples"
+            )
+        if mask.dtype != bool:
+            raise ValueError("subgroup_mask must be boolean")
+        if not np.any(mask):
+            raise ValueError("subgroup_mask selects no individuals")
+
+        return mask

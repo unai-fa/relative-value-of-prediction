@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rvp"
 version = "0.1.0"
-description = "Evaluate the value of prediction for guiding the allocation of scarce resources."
+description = "Study welfare surfaces for meta-design in allocation problems."
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "Apache-2.0"}
@@ -15,8 +15,14 @@ dependencies = [
     "matplotlib",
     "scipy",
     "scikit-learn",
-    "folktables",
+]
+
+[project.optional-dependencies]
+dev = [
     "pytest",
+]
+examples = [
+    "folktables",
 ]
 
 [tool.setuptools.packages.find]
@@ -24,6 +30,3 @@ include = ["rvp*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[project.urls]
-Homepage = "https://github.com/unai-fa/relative-value-of-prediction"

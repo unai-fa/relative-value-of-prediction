@@ -1,153 +1,200 @@
-# relative value of prediction
+# rvp
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/unai-fa/relative-value-of-prediction/blob/main/LICENSE)
+<p align="center">
+  <img src="assets/relative-value-of-prediction.png" alt="rvp design-space overview" width="70%">
+</p>
 
-<div align="center">
-  <img src="assets/relative-value-of-prediction.png" alt="Relative Value of Prediction" width="60%">
-  <h1></h1>
-</div>
+`rvp` is a Python toolkit for studying the meta-design of allocation
+problems. It helps evaluate how downstream welfare changes when a planner
+varies design choices such as program capacity, data availability, prediction
+inputs, or treatment size.
 
-`rvp` is a Python toolkit for evaluating the value of prediction for guiding the allocation of scarce resources.
-
-When predictions guide who receives limited societal resources, for example, cash transfers, job training or medical screenings, policymakers face a practical question: how valuable is improving predictions compared to other investments, such as expanding program capacity or increasing benefit levels? `rvp` provides the tools to answer this empirically, using your own data.
-
-> Companion to our paper *[Empirically Understanding the Value of Prediction in Allocation](https://www.arxiv.org/abs/2602.08786)* (Under Review).
-
-`rvp` is under active development. We welcome contributions that expand functionality, add new policy levers, or apply the toolkit to new domains.
-
----
+The package is under active development.
 
 ## Installation
 
+From the repository root:
+
 ```bash
-git clone https://github.com/unai-fa/relative-value-of-prediction.git
-cd relative-value-of-prediction
 pip install -e .
 ```
 
----
+To run the test suite:
 
-## Getting Started
+```bash
+python -m pytest -q
+```
 
-The best way to get started is the **[ACS Income notebook](examples/folktables-income/folktables-income.ipynb)**, which walks through the full toolkit step by step using US Census data (downloaded via the `folktables` package).
+## Core Idea
 
----
+The basic object in `rvp` is an `AllocationProblem`. It ties together the data
+available to the planner, the welfare objective, the resource constraint, and
+the allocation policy used to assign the scarce resource.
 
-## How It Works
+| Component | Role |
+| --- | --- |
+| `AllocationData` | predictions and ground-truth outcomes |
+| utility | how outcomes and allocations are valued, e.g. `CRRAUtility` |
+| constraint | how many units can receive the resource, e.g. `CoverageConstraint` |
+| policy | how scores are turned into allocations, e.g. `RankingPolicy` |
+
+Together, these components define the allocation problem to be solved. A design
+space then defines axes along which this problem can vary. For example, one
+axis might expand capacity, while another reveals predictions for a larger
+share of the population. The welfare surface evaluates the resulting allocation
+problem at each design configuration.
+
+## Minimal Example
 
 ```python
+import pandas as pd
+
 from rvp import AllocationData, AllocationProblem
-from rvp.utilities import CRRAUtility
 from rvp.constraints import CoverageConstraint
 from rvp.policies import RankingPolicy
+from rvp.utilities import CRRAUtility
 
-data = AllocationData(df=df)  # DataFrame with 'predictions' and 'ground_truth' columns
+df = pd.DataFrame(
+    {
+        "predictions": predictions,
+        "ground_truth": outcomes,
+    }
+)
+
+data = AllocationData(df=df)
 problem = AllocationProblem(
     data=data,
-    utility=CRRAUtility(rho=2.0, b=100),
-    constraint=CoverageConstraint(0.10, data.n),
+    utility=CRRAUtility(rho=3.0, b=100.0),
+    constraint=CoverageConstraint(max_coverage=0.10, population_size=data.n),
     policy=RankingPolicy(ascending=True),
 )
-results = problem.evaluate()
+
+result = problem.evaluate()
 ```
 
-An `AllocationProblem` combines four components:
+## Design Spaces
 
-| Component | What it encodes | Example |
-|---|---|---|
-| `AllocationData` | Predictions + ground truth | DataFrame with `predictions`, `ground_truth` |
-| `UtilityFunction` | How outcomes are valued | `CRRAUtility`, `PartitionedUtility` |
-| `ResourceConstraint` | Capacity limits | `CoverageConstraint` |
-| `Policy` | How predictions map to allocations | `RankingPolicy` (allocate to top-k) |
+Design dimensions transform one component of an allocation problem. The current
+public dimensions are:
 
-**Policy levers** modify one or more components. Policy levers are typically parameterized by an intensity $\theta$ with an optional cost model:
+| Dimension | Varies |
+| --- | --- |
+| `CapacityDimension` | the capacity constraint |
+| `BenefitDimension` | the transfer amount in CRRA utility |
+| `DataLabelingDimension` | the share of units with revealed predictions |
+| `PredictionSetDimension` | a discrete set of prediction/data variants |
 
-| Lever | Modifies | $\theta$ controls |
-|---|---|---|
-| `PredictionImprovementLever` | Predictions | Error reduction (interpolation toward ground truth) |
-| `ExpandCoverageLever` | Constraint | Additional coverage (pp increase) |
-| `DataLabelingLever` | Predictions | Share of population with predictions |
-| `CRRABenefitLever` | Utility | Transfer amount per beneficiary |
-
-Applying a lever returns a new problem:
+Example:
 
 ```python
-from rvp.levers import ExpandCoverageLever
+from rvp import CapacityDimension, DataLabelingDimension, DesignSpace
 
-lever = ExpandCoverageLever(name="Capacity", coverage_increase=0.05, marginal_cost_per_person=100)
-new_problem = lever.apply(problem)
-new_problem.evaluate()
-```
-
----
-
-## Comparing Policy Levers
-
-The toolkit supports three modes of comparison, depending on what cost information is available.
-
-### Budget optimization — costs known for all levers
-
-Find the welfare-maximizing split of a fixed budget across any number of levers:
-
-```python
-from rvp.comparison import optimize_budget_allocation, plot_budget_shares
-
-results = optimize_budget_allocation(
-    problem,
-    levers=[data_lever, capacity_lever],
-    budget_range=(0, 100_000),
-    n_budget_points=20,
-    grid_density=10,
+capacity_dim = CapacityDimension(bounds=(0.01, 0.50), name="capacity")
+labeling_dim = DataLabelingDimension(
+    base_problem=problem,
+    bounds=(0.10, 1.00),
+    seed=42,
+    name="label_share",
 )
-plot_budget_shares(results)
+
+space = DesignSpace(
+    base_problem=problem,
+    dimensions=[capacity_dim, labeling_dim],
+)
+
+welfare = space.welfare_at(
+    {capacity_dim: 0.20, labeling_dim: 0.50},
+    metric="mean_utility",
+)
 ```
 
-### Equivalent cost — costs known for one lever
+## Plotting Welfare Surfaces
 
-What investment in lever B matches the welfare gain of lever A?
+`plot_welfare_surface` evaluates a two-dimensional slice of a design space and
+plots the resulting welfare surface.
 
 ```python
-from rvp.comparison import LeverComparison
+from rvp import plot_welfare_surface
 
-comparison = LeverComparison(problem, lever_a=prediction_lever, lever_b=capacity_lever)
-comparison.plot_welfare_difference(theta_range=(0, 0.5), swept_lever="a")
-comparison.plot_equivalent_cost(theta_range=(0, 0.5), swept_lever="a")
+fig, ax = plot_welfare_surface(
+    space,
+    dim_x=capacity_dim,
+    dim_y=labeling_dim,
+    welfare_metric="mean_utility",
+    normalize="max",
+    n=40,
+    contour_labels=True,
+    cbar_label="Normalized welfare",
+)
 ```
 
-### Welfare curves — no cost information
+The plotting helper also supports status-quo markers, local welfare contours,
+cost-frontier overlays, and expansion paths returned by the budget optimizers.
 
-Compare relative welfare impact across lever intensities:
+## Costs and Budget Optimization
+
+Cost surfaces are separate from welfare surfaces. This lets the same evaluated
+design space be inspected under different assumptions about implementation
+costs.
 
 ```python
-from rvp.comparison import plot_welfare_curve
+from rvp import CostSurface
+from rvp.comparison import optimize_budget_frontier
 
-plot_welfare_curve(problem, lever=capacity_lever, theta_range=(0, 0.5))
-comparison.plot_welfare_heatmap(theta_a_range=(0, 1.0), theta_b_range=(0, 0.5))
+cost_surface = CostSurface(
+    lambda config: population_size
+    * (
+        cost_per_label * float(config[labeling_dim])
+        + transfer_amount * float(config[capacity_dim])
+    )
+)
+
+budget_results = optimize_budget_frontier(
+    space=space,
+    cost_surface=cost_surface,
+    solve_dim=capacity_dim,
+    budget_range=(min_budget, max_budget),
+    n_budget_points=25,
+    dims=[capacity_dim, labeling_dim],
+    n=50,
+    welfare_metric="mean_utility",
+)
 ```
 
----
+Use `optimize_budget` for grid-based optimization over feasible configurations,
+and `optimize_budget_frontier` when one continuous dimension can be solved to
+spend each budget exactly.
 
-## Examples
+## Case-Study Notebooks
 
-| Example | Data | Access |
-|---|---|---|
-| **[ACS Income](examples/folktables-income/)** | American Community Survey | Public (via `folktables`) |
-| **[Poverty Targeting](examples/poverty-targeting/)** | Ethiopia LSMS | [World Bank](https://microdata.worldbank.org/index.php/catalog/2783) |
-| **[Employment Office](examples/unemployment-targeting/)** | IAB SIAB | [FDZ](https://fdz.iab.de/en/our-data-products/individual-and-household-data/siab/) (restricted) |
+The standard empirical notebooks are:
 
----
+| Notebook | Setting | Data access |
+| --- | --- | --- |
+| [`examples/poverty-targeting/poverty-targeting.ipynb`](examples/poverty-targeting/poverty-targeting.ipynb) | Targeting cash transfers using poverty scorecard predictions | Ethiopia LSMS data from the [World Bank Microdata Library](https://microdata.worldbank.org/index.php/catalog/2783) |
+| [`examples/unemployment-targeting/unemployment-targeting.ipynb`](examples/unemployment-targeting/unemployment-targeting.ipynb) | Prioritizing job seekers at risk of long-term unemployment | SIAB data from the [Research Data Centre of the Institute for Employment Research](https://fdz.iab.de/en/our-data-products/individual-and-household-data/siab/) |
 
-## Citation
+## Repository Structure
 
-```bibtex
-@article{fischerabaigar2025rvp,
-  title   = {Empirically Understanding the Value of Prediction in Allocation},
-  author  = {Fischer-Abaigar, Unai and Aiken, Emily and Kern, Christoph and Perdomo, Juan C.},
-  journal = {arXiv preprint arXiv:2602.08786},
-  year    = {2026}
-}
+```text
+rvp/
+  data.py                    # AllocationData
+  problem.py                 # AllocationProblem
+  constraints/               # resource constraints
+  policies/                  # allocation policies
+  utilities/                 # welfare/utility functions
+  design/                    # design dimensions, spaces, cost surfaces
+  comparison/                # budget optimization
+  plotting/                  # welfare surface plotting
+
+examples/
+  poverty-targeting/         # case-study notebook
+  unemployment-targeting/    # case-study notebook
+
+tests/
+  test_*.py                  # focused package tests
 ```
 
 ## License
 
-Apache 2.0
+Apache-2.0

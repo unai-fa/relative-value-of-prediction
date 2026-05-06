@@ -28,6 +28,16 @@ class TestCoverageConstraint:
         c = CoverageConstraint(max_coverage=100)
         assert c.get_capacity() == 100
 
+    def test_full_coverage_fractional_float(self):
+        """Float 1.0 means full fractional coverage when population_size is provided."""
+        c = CoverageConstraint(max_coverage=1.0, population_size=100)
+        assert c.get_capacity() == 100
+
+    def test_one_absolute_slot_int(self):
+        """Integer 1 still means one absolute slot."""
+        c = CoverageConstraint(max_coverage=1)
+        assert c.get_capacity() == 1
+
     def test_unit_costs_are_ones(self):
         """All unit costs should be 1."""
         c = CoverageConstraint(max_coverage=0.2, population_size=100)
